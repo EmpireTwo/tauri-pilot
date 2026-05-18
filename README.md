@@ -42,18 +42,9 @@ There's no tool for AI agents to interact with Tauri app UIs. Playwright doesn't
 
 ## How it works
 
-```text
-┌──────────────┐   Unix Socket /     ┌─────────────────────────────┐
-│  tauri-pilot  │   Named Pipe (Win) │  tauri-plugin-pilot (Rust)  │
-│  (CLI)        │ ◄─────────────────► │  embedded in your app       │
-└──────────────┘   JSON-RPC           │                             │
-                                     │  ┌─────────────────────┐   │
-                                     │  │  JS Bridge (injected)│   │
-                                     │  │  window.__PILOT__    │   │
-                                     │  └─────────────────────┘   │
-                                     │  WebView                    │
-                                     └─────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/architecture.png" alt="tauri-pilot architecture: CLI connects to embedded plugin via Unix socket / Named Pipe using JSON-RPC; plugin injects a JS bridge into the WebView" width="700">
+</p>
 
 1. **Plugin** embeds in your Tauri app (debug builds only), starts a Unix socket / Named Pipe server
 2. **CLI** connects to the socket, sends JSON-RPC commands

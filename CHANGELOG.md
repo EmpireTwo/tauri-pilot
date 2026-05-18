@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace ASCII architecture diagram in `README.md` with an `assets/architecture.png`
+  illustration (with descriptive `alt` text) for better rendering on crates.io,
+  GitHub, and assistive technologies.
+
 ## [0.5.2] - 2026-05-14
 
 ### Changed
