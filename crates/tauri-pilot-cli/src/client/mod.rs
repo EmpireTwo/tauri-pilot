@@ -3,17 +3,21 @@ use crate::protocol::{Request, Response};
 use anyhow::{Result, bail};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{OwnedReadHalf as TcpReadHalf, OwnedWriteHalf as TcpWriteHalf};
 
 /// JSON-RPC client over a platform-specific transport (Unix socket or Named Pipe).
 pub(crate) struct Client {
+    tcp_reader: Option<BufReader<TcpReadHalf>>,
+    tcp_writer: Option<TcpWriteHalf>,
     #[cfg(unix)]
-    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+    reader: Option<BufReader<tokio::net::unix::OwnedReadHalf>>,
     #[cfg(unix)]
-    writer: tokio::net::unix::OwnedWriteHalf,
+    writer: Option<tokio::net::unix::OwnedWriteHalf>,
     #[cfg(windows)]
-    reader: BufReader<tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>>,
+    reader:
+        Option<BufReader<tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>>>,
     #[cfg(windows)]
-    writer: tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>,
+    writer: Option<tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>>,
     next_id: u64,
 }
 
@@ -28,6 +32,25 @@ impl Client {
         {
             windows::connect(path).await
         }
+    }
+
+    /// Connect to a tauri-pilot TCP endpoint.
+    pub async fn connect_tcp(addr: std::net::SocketAddr) -> Result<Self> {
+        let stream = tokio::net::TcpStream::connect(addr).await?;
+        let (read, write) = stream.into_split();
+        Ok(Self {
+            tcp_reader: Some(BufReader::new(read)),
+            tcp_writer: Some(write),
+            #[cfg(unix)]
+            reader: None,
+            #[cfg(unix)]
+            writer: None,
+            #[cfg(windows)]
+            reader: None,
+            #[cfg(windows)]
+            writer: None,
+            next_id: 1,
+        })
     }
 
     /// Send a JSON-RPC request and return the result value.
@@ -48,11 +71,11 @@ impl Client {
 
         let mut bytes = serde_json::to_vec(&request)?;
         bytes.push(b'\n');
-        self.writer.write_all(&bytes).await?;
-        self.writer.flush().await?;
+        self.write_all(&bytes).await?;
+        self.flush().await?;
 
         let mut line = String::new();
-        let n = self.reader.read_line(&mut line).await?;
+        let n = self.read_line(&mut line).await?;
         if n == 0 {
             bail!("Server closed the connection");
         }
@@ -73,6 +96,40 @@ impl Client {
         // success with Value::Null rather than an error so bash `&&` chains
         // and `set -e` keep working. See #48.
         Ok(response.result.unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
+        if let Some(writer) = self.tcp_writer.as_mut() {
+            writer.write_all(bytes).await?;
+            return Ok(());
+        }
+        if let Some(writer) = self.writer.as_mut() {
+            writer.write_all(bytes).await?;
+            return Ok(());
+        }
+        bail!("client is not connected")
+    }
+
+    async fn flush(&mut self) -> Result<()> {
+        if let Some(writer) = self.tcp_writer.as_mut() {
+            writer.flush().await?;
+            return Ok(());
+        }
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush().await?;
+            return Ok(());
+        }
+        bail!("client is not connected")
+    }
+
+    async fn read_line(&mut self, line: &mut String) -> Result<usize> {
+        if let Some(reader) = self.tcp_reader.as_mut() {
+            return Ok(reader.read_line(line).await?);
+        }
+        if let Some(reader) = self.reader.as_mut() {
+            return Ok(reader.read_line(line).await?);
+        }
+        bail!("client is not connected")
     }
 }
 

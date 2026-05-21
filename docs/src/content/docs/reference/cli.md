@@ -11,7 +11,8 @@ These options can be used with any command.
 
 | Option | Description |
 |--------|-------------|
-| `--socket <path>` | Explicit path to the Unix socket. Auto-detected if omitted. Env: `TAURI_PILOT_SOCKET` |
+| `--socket <path>` | Explicit path to the Unix socket / Named Pipe. Auto-detected if omitted. Env: `TAURI_PILOT_SOCKET` |
+| `--addr <host:port>` | Explicit TCP endpoint when the plugin was built with the `tcp-transport` feature. Auto-detected from the `pilot.port` discovery file if omitted. Env: `TAURI_PILOT_ADDR` |
 | `--window <label>` | Target a specific window by label. Env: `TAURI_PILOT_WINDOW`. Default: `main`, falls back to first available |
 | `--json` | Output JSON instead of human-readable text |
 
@@ -22,6 +23,24 @@ When `--socket` is not specified, the CLI resolves the socket in this priority o
 1. `--socket <path>` — explicit flag (highest priority)
 2. `$TAURI_PILOT_SOCKET` — environment variable
 3. Glob `/tmp/tauri-pilot-*.sock` → most recently modified file (by mtime)
+
+### TCP Auto-Detection
+
+When the plugin is built with the `tcp-transport` Cargo feature, the Unix socket
+/ Named Pipe server is replaced by a loopback TCP listener and the CLI picks
+the TCP path instead:
+
+1. `--addr <host:port>` — explicit flag (highest priority)
+2. `$TAURI_PILOT_ADDR` — environment variable
+3. Newest `pilot.port` file under `${TMPDIR}/tauri-pilot/<identifier>/`
+   (by mtime). The file contains the bound port as plain ASCII digits and is
+   created with permissions `0o600`; its parent directory uses `0o700`. Once
+   resolved, the CLI connects to `127.0.0.1:<port>`.
+
+The `tcp-transport` feature is mutually exclusive with the Unix socket /
+Named Pipe transports: a plugin build is either one or the other. The TCP
+listener accepts only peers whose IP `is_loopback()`; there is no
+authentication or encryption on the wire.
 
 ### Window Targeting
 

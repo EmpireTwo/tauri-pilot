@@ -10,8 +10,10 @@ pub async fn connect(path: &Path) -> Result<Client> {
         .with_context(|| format!("Cannot connect to socket: {}", path.display()))?;
     let (reader, writer) = stream.into_split();
     Ok(Client {
-        reader: BufReader::new(reader),
-        writer,
+        tcp_reader: None,
+        tcp_writer: None,
+        reader: Some(BufReader::new(reader)),
+        writer: Some(writer),
         next_id: 1,
     })
 }

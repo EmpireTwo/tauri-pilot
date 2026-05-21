@@ -23,6 +23,7 @@ default = ["press"]
 # release builds where the whole plugin is already no-op'd by
 # `cfg(debug_assertions)`.
 press = ["dep:enigo"]
+tcp-transport = []
 
 [dependencies]
 serde.workspace = true

@@ -50,6 +50,31 @@ There's no tool for AI agents to interact with Tauri app UIs. Playwright doesn't
 2. **CLI** connects to the socket, sends JSON-RPC commands
 3. **JS Bridge** injected into the WebView handles DOM inspection and interaction
 
+### Loopback TCP transport (optional)
+
+For environments where the default Unix socket / Named Pipe transport is not
+available (sandboxed containers, hosts that disallow the abstract namespace,
+remote-attach IDE setups), build the plugin with the `tcp-transport` feature
+to switch to a loopback TCP listener:
+
+```toml
+# src-tauri/Cargo.toml
+[dependencies]
+tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot", features = ["tcp-transport"] }
+```
+
+The plugin binds `127.0.0.1:0`, rejects any non-loopback peer at accept time,
+and writes the chosen port to a private discovery file at
+`${TMPDIR}/tauri-pilot/<identifier>/pilot.port` (file `0o600`, parent
+`0o700`). Pass `--addr 127.0.0.1:<port>` or set `TAURI_PILOT_ADDR` on the CLI
+to connect; with neither, the CLI auto-detects the newest `pilot.port` under
+`${TMPDIR}/tauri-pilot/`.
+
+The `tcp-transport` feature is mutually exclusive with the Unix socket and
+Named Pipe transports. Loopback isolation is the only access control — there
+is no authentication or encryption on the wire, so do not enable this across
+hosts.
+
 ## Quick Start
 
 ### 1. Add the plugin to your Tauri app

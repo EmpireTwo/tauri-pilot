@@ -38,6 +38,8 @@ const BRIDGE_JS: &str = concat!(
 /// and starts a Unix socket server at `$XDG_RUNTIME_DIR/tauri-pilot-{identifier}.sock` (falls back to `/tmp` if unavailable).
 /// In debug builds on Windows, starts a Named Pipe server at
 /// `\\.\pipe\tauri-pilot-{identifier}` and registers the instance under `%LOCALAPPDATA%\tauri-pilot\instances\`.
+/// With the `tcp-transport` feature enabled, starts a loopback TCP server and
+/// writes the selected port to a private discovery file instead.
 #[must_use]
 pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     #[cfg(not(all(any(unix, windows), debug_assertions)))]
@@ -54,28 +56,49 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 app.manage(engine.clone());
 
                 let identifier = sanitize_identifier(&app.config().identifier);
-                let socket_path = server::socket_path(&identifier);
 
                 let eval_fn = make_eval_fn(app);
                 let list_fn = make_list_fn(app);
                 let focus_fn = make_focus_fn(app);
 
-                let (listener, guard) = server::bind(&socket_path).map_err(|e| {
-                    tracing::error!(path = %socket_path.display(), "failed to bind socket: {e}");
-                    e
-                })?;
-
                 let recorder = Recorder::new();
 
-                tauri::async_runtime::spawn(server::run(
-                    listener,
-                    guard,
-                    engine,
-                    Some(eval_fn),
-                    Some(list_fn),
-                    Some(focus_fn),
-                    recorder,
-                ));
+                #[cfg(feature = "tcp-transport")]
+                {
+                    let (listener, _addr, guard) = server::tcp::bind(&identifier).map_err(|e| {
+                        tracing::error!("failed to bind TCP transport: {e}");
+                        e
+                    })?;
+
+                    tauri::async_runtime::spawn(server::tcp::run(
+                        listener,
+                        guard,
+                        engine,
+                        Some(eval_fn),
+                        Some(list_fn),
+                        Some(focus_fn),
+                        recorder,
+                    ));
+                }
+
+                #[cfg(not(feature = "tcp-transport"))]
+                {
+                    let socket_path = server::socket_path(&identifier);
+                    let (listener, guard) = server::bind(&socket_path).map_err(|e| {
+                        tracing::error!(path = %socket_path.display(), "failed to bind socket: {e}");
+                        e
+                    })?;
+
+                    tauri::async_runtime::spawn(server::run(
+                        listener,
+                        guard,
+                        engine,
+                        Some(eval_fn),
+                        Some(list_fn),
+                        Some(focus_fn),
+                        recorder,
+                    ));
+                }
 
                 Ok(())
             })

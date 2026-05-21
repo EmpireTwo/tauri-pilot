@@ -116,12 +116,14 @@ pub(crate) async fn dispatch_request(
     }
 }
 
-#[cfg(unix)]
+#[cfg(feature = "tcp-transport")]
+pub mod tcp;
+#[cfg(all(unix, not(feature = "tcp-transport")))]
 pub mod unix;
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "tcp-transport")))]
 pub mod windows;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "tcp-transport")))]
 pub use unix::{bind, run, socket_path};
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "tcp-transport")))]
 pub use windows::{bind, run, socket_path};

@@ -59,8 +59,12 @@ async fn main() -> Result<()> {
         .await;
     }
 
-    let socket = resolve_socket(args.socket)?;
-    let mut client = Client::connect(&socket).await?;
+    let mut client = if let Some(addr) = resolve_tcp_addr(args.addr)? {
+        Client::connect_tcp(addr).await?
+    } else {
+        let socket = resolve_socket(args.socket)?;
+        Client::connect(&socket).await?
+    };
 
     // Handle --follow mode: loop forever polling for new entries
     if let Command::Logs {
@@ -1375,6 +1379,48 @@ pub(crate) fn resolve_socket(explicit: Option<PathBuf>) -> Result<PathBuf> {
     {
         resolve_socket_windows()
     }
+}
+
+pub(crate) fn resolve_tcp_addr(
+    explicit: Option<std::net::SocketAddr>,
+) -> Result<Option<std::net::SocketAddr>> {
+    if explicit.is_some() {
+        return Ok(explicit);
+    }
+
+    let Some(path) = newest_port_file() else {
+        return Ok(None);
+    };
+    let port = std::fs::read_to_string(&path)
+        .with_context(|| format!("read tauri-pilot port file: {}", path.display()))?
+        .trim()
+        .parse::<u16>()
+        .with_context(|| format!("parse tauri-pilot port file: {}", path.display()))?;
+    Ok(Some(std::net::SocketAddr::from(([127, 0, 0, 1], port))))
+}
+
+fn newest_port_file() -> Option<PathBuf> {
+    let root = std::env::temp_dir().join("tauri-pilot");
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let entries = std::fs::read_dir(root).ok()?;
+
+    for entry in entries.flatten() {
+        let path = entry.path().join("pilot.port");
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if newest
+            .as_ref()
+            .is_none_or(|(_, current)| modified > *current)
+        {
+            newest = Some((path, modified));
+        }
+    }
+
+    newest.map(|(path, _)| path)
 }
 
 #[cfg(windows)]

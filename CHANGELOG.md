@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Loopback TCP transport** behind a new `tcp-transport` Cargo feature on
+  `tauri-plugin-pilot`. Enabling it switches the plugin's debug-build server
+  from the Unix-socket / Windows Named Pipe path to a `127.0.0.1:0` TCP
+  listener and writes the bound port to
+  `${TMPDIR}/tauri-pilot/<identifier>/pilot.port` (file mode `0o600`, parent
+  directory `0o700`). Intended for sandboxed environments (containerized dev
+  loops, CI runners on hosts that disallow abstract namespace sockets, IDE
+  remote-attach setups) where the existing socket transports are not
+  available. Loopback isolation is the only access control: the accept loop
+  rejects any peer whose `SocketAddr::ip()` is not `is_loopback()`, and there
+  is no authentication or encryption on the wire — do not enable across hosts.
+  The `tcp-transport` feature is mutually exclusive with the Unix-socket and
+  Named-Pipe transports (cfg'd out under the flag), not additive.
+- `tauri-pilot --addr <host:port>` flag and `TAURI_PILOT_ADDR` environment
+  variable on the CLI for connecting to a TCP-transport plugin. When neither
+  is supplied, the CLI scans `${TMPDIR}/tauri-pilot/*/pilot.port` and picks
+  the newest entry (by mtime). Precedence: `--addr` > `TAURI_PILOT_ADDR` >
+  `pilot.port` autodiscovery > existing `--socket` / `TAURI_PILOT_SOCKET`
+  Unix-socket / Named-Pipe resolution.
+
 ### Security
 
 - `SKILL.md`: second pass on skills.sh Snyk findings W007 and W011 — the

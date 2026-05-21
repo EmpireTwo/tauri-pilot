@@ -60,6 +60,31 @@ The `{identifier}` value comes from the `identifier` field in your `tauri.conf.j
 
 The CLI auto-discovers this socket when you run commands.
 
+### Alternative: loopback TCP transport
+
+In sandboxed environments where the default Unix socket / Named Pipe
+transport is unavailable, build the plugin with the `tcp-transport` feature:
+
+```toml
+# src-tauri/Cargo.toml
+[dependencies]
+tauri-plugin-pilot = { git = "https://github.com/mpiton/tauri-pilot", features = ["tcp-transport"] }
+```
+
+The plugin then binds `127.0.0.1:<random port>` instead and writes the chosen
+port to a discovery file at:
+
+```text
+${TMPDIR}/tauri-pilot/{identifier}/pilot.port
+```
+
+The file is created with permissions `0o600` and its parent directory with
+`0o700`. The CLI picks up the newest `pilot.port` under `${TMPDIR}/tauri-pilot/`
+automatically; pass `--addr 127.0.0.1:<port>` (or set `TAURI_PILOT_ADDR`) to
+override. The accept loop rejects any peer whose IP is not loopback, so the
+listener is reachable only from the same host. The `tcp-transport` feature is
+mutually exclusive with the Unix socket / Named Pipe transports — pick one.
+
 ## 5. Permissions
 
 The plugin requires the `pilot:default` permission for its internal `__callback` IPC command. Add it to your capability file (e.g. `src-tauri/capabilities/default.json`):

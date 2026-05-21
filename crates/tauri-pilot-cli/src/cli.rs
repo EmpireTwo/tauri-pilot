@@ -8,6 +8,10 @@ pub(crate) struct Cli {
     #[arg(long, env = "TAURI_PILOT_SOCKET")]
     pub socket: Option<PathBuf>,
 
+    /// TCP endpoint, for example 127.0.0.1:49152 (auto-detected from pilot.port if omitted).
+    #[arg(long, env = "TAURI_PILOT_ADDR")]
+    pub addr: Option<std::net::SocketAddr>,
+
     /// Output JSON instead of text.
     #[arg(long, global = true)]
     pub json: bool,
