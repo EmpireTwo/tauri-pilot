@@ -24,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** MCP tool names are now namespaced under `pilot.*` — every tool
+  exposed by `tauri-pilot mcp` is registered (and accepted in `tools/call`) as
+  `pilot.<name>` instead of the bare `<name>`. This covers all currently exposed
+  tools (e.g. `pilot.ping`, `pilot.click`, `pilot.fill`, `pilot.attrs`,
+  `pilot.snapshot`, `pilot.eval`, `pilot.assert_text`, etc.). Motivation: when
+  this CLI is registered in an MCP client alongside other MCP servers, generic
+  bare names like `attrs` or `ping` collide with — and shadow — tools from those
+  other servers, forcing the client owner to disambiguate by hand. Clients that
+  referred to bare names in their server registrations or inline prompts must
+  update to the prefixed form (`attrs` → `pilot.attrs`, `ping` → `pilot.ping`,
+  and so on). No tool semantics, schemas, or MCP protocol versions change.
+- Pin the `rmcp` manifest floor at `1.7.0` (was `^1.4.0`). The lockfile already
+  resolved to `1.7.0` via the earlier caret bump in `[0.5.2]`, so this only
+  aligns the declared dependency with the version actually being tested and
+  prevents an accidental rebuild against a pre-`1.7.0` rmcp. No behaviour
+  change.
 - Replace ASCII architecture diagram in `README.md` with an `assets/architecture.png`
   illustration (with descriptive `alt` text) for better rendering on crates.io,
   GitHub, and assistive technologies.

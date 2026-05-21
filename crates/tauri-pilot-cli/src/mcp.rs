@@ -124,6 +124,7 @@ impl PilotMcpServer {
         name: &str,
         args: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let name = normalize_tool_name(name);
         let window = self.window_arg(&args)?;
         match name {
             "ping" => self.call_app_tool("ping", None, window).await,
@@ -625,10 +626,23 @@ impl ServerHandler for PilotMcpServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        let name = namespaced_tool_name(name);
         cached_tools()
             .iter()
-            .find(|tool| tool.name == name)
+            .find(|tool| tool.name == name.as_str())
             .cloned()
+    }
+}
+
+fn normalize_tool_name(name: &str) -> &str {
+    name.strip_prefix("pilot.").unwrap_or(name)
+}
+
+fn namespaced_tool_name(name: &str) -> String {
+    if name.starts_with("pilot.") {
+        name.to_owned()
+    } else {
+        format!("pilot.{name}")
     }
 }
 
@@ -1022,7 +1036,12 @@ fn build_tools() -> Vec<Tool> {
     specs
         .into_iter()
         .map(|spec| {
-            Tool::new(spec.name, spec.description, (spec.schema)()).with_annotations(
+            Tool::new(
+                format!("pilot.{}", spec.name),
+                spec.description,
+                (spec.schema)(),
+            )
+            .with_annotations(
                 ToolAnnotations::new()
                     .read_only(spec.read_only)
                     .destructive(spec.destructive)
@@ -1574,7 +1593,15 @@ mod tests {
     #[test]
     fn tool_list_matches_cli_command_surface() {
         let tools = tools();
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool.name.as_ref().starts_with("pilot."))
+        );
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| normalize_tool_name(tool.name.as_ref()))
+            .collect();
         let expected = vec![
             "assert_checked",
             "assert_contains",
