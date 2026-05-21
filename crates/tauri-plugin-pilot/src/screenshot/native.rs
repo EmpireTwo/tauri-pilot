@@ -13,6 +13,7 @@ use super::ScreenshotError;
 /// [`ScreenshotError::CaptureFailed`] on macOS until the `WKWebView` path is
 /// wired in a follow-up milestone.
 #[cfg(target_os = "macos")]
+#[allow(dead_code, reason = "wired in the WkWebView milestone")]
 pub(crate) fn capture_wkwebview_png<R: tauri::Runtime>(
     _window: &tauri::WebviewWindow<R>,
 ) -> Result<Vec<u8>, ScreenshotError> {
@@ -27,6 +28,7 @@ pub(crate) fn capture_wkwebview_png<R: tauri::Runtime>(
 ///
 /// Always returns [`ScreenshotError::PlatformUnsupported`].
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code, reason = "wired in the WkWebView milestone")]
 pub(crate) fn capture_wkwebview_png<R: tauri::Runtime>(
     _window: &tauri::WebviewWindow<R>,
 ) -> Result<Vec<u8>, ScreenshotError> {

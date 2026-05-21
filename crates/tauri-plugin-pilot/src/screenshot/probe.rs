@@ -6,10 +6,18 @@ pub(crate) enum ScreenshotBackend {
     /// `takeSnapshot:` wiring lands. The auto-probe never selects it today;
     /// it stays in the enum so callers can opt in explicitly when the
     /// follow-up milestone wires it.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "constructed in the WkWebView milestone")]
     WkWebViewSnapshot,
     CgWindowList,
     ScreencaptureProbe,
+    /// Returned by [`selected_backend`] on hosts where no native capture
+    /// surface is available. Constructed in `cfg(not(target_os = "macos"))`
+    /// builds; matched on macOS so the dispatcher can map it to a
+    /// `PERMISSION_DENIED` IPC error.
+    #[allow(
+        dead_code,
+        reason = "constructed in cfg(not(target_os = \"macos\")) builds"
+    )]
     PlatformUnsupported,
 }
 

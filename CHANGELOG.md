@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS native screenshot backend (`screencapture` shell-out plus
   `CGWindowListCreateImage` fallback) behind the existing `screenshot`
   module surface; WKWebView path scaffolded for follow-up.
+- `pilot.screenshot` JSON-RPC method (also advertised as `pilot.screenshot`
+  MCP tool) that captures a window by `window_id` to a caller-specified
+  `output_path`. Uses macOS `screencapture` when Screen Recording permission
+  is granted, falls back to `CGWindowListCreateImage` with `tcc_denied: true`
+  in metadata when permission is revoked between probe and call. Path-only
+  response shape — no inline bytes. The bare `screenshot` method continues
+  to route to the bridge html-to-image path for backwards compatibility, and
+  also accepts the new native shape when callers pass `output_path`.
 
 ### Security
 

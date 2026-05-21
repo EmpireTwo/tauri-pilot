@@ -8,11 +8,8 @@ mod handler;
 pub(crate) mod key;
 pub(crate) mod protocol;
 pub(crate) mod recorder;
-// Scaffolded native screenshot surface; wired to internal callers in a
-// follow-up milestone. `dead_code` and `unused_imports` are suppressed at the
-// module boundary so the scaffolding can land independently of its first
-// caller.
-#[allow(dead_code, unused_imports)]
+// Native screenshot capture for the `pilot.screenshot` JSON-RPC method.
+// macOS-only today; non-macOS callers receive `PERMISSION_DENIED`.
 pub(crate) mod screenshot;
 #[cfg(any(unix, windows))]
 pub(crate) mod server;
