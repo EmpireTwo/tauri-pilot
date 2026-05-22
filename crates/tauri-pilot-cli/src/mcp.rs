@@ -124,6 +124,7 @@ impl PilotMcpServer {
         name: &str,
         args: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let name = normalize_tool_name(name);
         let window = self.window_arg(&args)?;
         match name {
             "ping" => self.call_app_tool("ping", None, window).await,
@@ -625,10 +626,25 @@ impl ServerHandler for PilotMcpServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        let name = namespaced_tool_name(name);
         cached_tools()
             .iter()
-            .find(|tool| tool.name == name)
+            .find(|tool| tool.name == name.as_str())
             .cloned()
+    }
+}
+
+const PILOT_PREFIX: &str = "pilot.";
+
+fn normalize_tool_name(name: &str) -> &str {
+    name.strip_prefix(PILOT_PREFIX).unwrap_or(name)
+}
+
+fn namespaced_tool_name(name: &str) -> String {
+    if name.starts_with(PILOT_PREFIX) {
+        name.to_owned()
+    } else {
+        format!("{PILOT_PREFIX}{name}")
     }
 }
 
@@ -1022,7 +1038,12 @@ fn build_tools() -> Vec<Tool> {
     specs
         .into_iter()
         .map(|spec| {
-            Tool::new(spec.name, spec.description, (spec.schema)()).with_annotations(
+            Tool::new(
+                namespaced_tool_name(spec.name),
+                spec.description,
+                (spec.schema)(),
+            )
+            .with_annotations(
                 ToolAnnotations::new()
                     .read_only(spec.read_only)
                     .destructive(spec.destructive)
@@ -1574,7 +1595,15 @@ mod tests {
     #[test]
     fn tool_list_matches_cli_command_surface() {
         let tools = tools();
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool.name.as_ref().starts_with(PILOT_PREFIX))
+        );
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| normalize_tool_name(tool.name.as_ref()))
+            .collect();
         let expected = vec![
             "assert_checked",
             "assert_contains",
@@ -1623,6 +1652,40 @@ mod tests {
             "windows",
         ];
         assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn tool_name_helpers_are_round_trip_symmetric() {
+        assert_eq!(normalize_tool_name("click"), "click");
+        assert_eq!(normalize_tool_name("pilot.click"), "click");
+        assert_eq!(namespaced_tool_name("click"), "pilot.click");
+        assert_eq!(namespaced_tool_name("pilot.click"), "pilot.click");
+    }
+
+    #[test]
+    fn tool_name_helpers_handle_corner_cases() {
+        // normalize_tool_name: empty, bare prefix, double prefix
+        assert_eq!(normalize_tool_name(""), "");
+        assert_eq!(normalize_tool_name(PILOT_PREFIX), "");
+        // Single-strip is intentional: a double prefix loses only the outer one.
+        assert_eq!(normalize_tool_name("pilot.pilot.click"), "pilot.click");
+
+        // namespaced_tool_name: empty, bare prefix, already-namespaced
+        assert_eq!(namespaced_tool_name(""), PILOT_PREFIX);
+        assert_eq!(namespaced_tool_name(PILOT_PREFIX), PILOT_PREFIX);
+        assert_eq!(namespaced_tool_name("pilot.click"), "pilot.click");
+    }
+
+    #[test]
+    fn get_tool_resolves_bare_and_prefixed_names_to_same_tool() {
+        let pilot = PilotMcpServer::new(None, None);
+        let bare = pilot.get_tool("click").expect("bare name resolves");
+        let prefixed = pilot
+            .get_tool("pilot.click")
+            .expect("prefixed name resolves");
+        assert_eq!(bare.name, prefixed.name);
+        assert_eq!(bare.description, prefixed.description);
+        assert_eq!(bare.name.as_ref(), "pilot.click");
     }
 
     #[test]
