@@ -124,6 +124,12 @@ impl PilotMcpServer {
         name: &str,
         args: JsonObject,
     ) -> Result<CallToolResult, McpError> {
+        let name = normalize_tool_name(name);
+        if DANGEROUS_MCP_TOOLS.contains(&name) && !dangerous_mcp_tools_enabled() {
+            return Err(invalid_params(format!(
+                "tool '{name}' is disabled by default. Set {ENABLE_DANGEROUS_MCP_TOOLS_ENV}=1 to enable dangerous MCP tools."
+            )));
+        }
         let window = self.window_arg(&args)?;
         match name {
             "ping" => self.call_app_tool("ping", None, window).await,
@@ -247,10 +253,23 @@ impl PilotMcpServer {
                 )
                 .await
             }
+            "screenshot_native" => {
+                let mut payload = json!({
+                    "window_id": required_u32(&args, "window_id")?,
+                    "output_path": required_string(&args, "output_path")?,
+                });
+                if let Some(format) = optional_string(&args, "format")? {
+                    payload["format"] = json!(format);
+                }
+                self.call_app_tool("screenshot_native", Some(payload), window)
+                    .await
+            }
             "navigate" => {
+                let url = required_string(&args, "url")?;
+                validate_navigate_url(&url)?;
                 self.call_app_tool(
                     "navigate",
-                    Some(json!({"url": required_string(&args, "url")?})),
+                    Some(json!({ "url": url })),
                     window,
                 )
                 .await
@@ -625,11 +644,63 @@ impl ServerHandler for PilotMcpServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        let name = namespaced_tool_name(name);
         cached_tools()
             .iter()
-            .find(|tool| tool.name == name)
+            .find(|tool| tool.name == name.as_str())
             .cloned()
     }
+}
+
+const PILOT_PREFIX: &str = "pilot.";
+const ENABLE_DANGEROUS_MCP_TOOLS_ENV: &str = "TAURI_PILOT_MCP_ENABLE_DANGEROUS_TOOLS";
+const DANGEROUS_MCP_TOOLS: &[&str] = &["drop", "eval", "ipc"];
+
+fn normalize_tool_name(name: &str) -> &str {
+    name.strip_prefix(PILOT_PREFIX).unwrap_or(name)
+}
+
+fn namespaced_tool_name(name: &str) -> String {
+    if name.starts_with(PILOT_PREFIX) {
+        name.to_owned()
+    } else {
+        format!("{PILOT_PREFIX}{name}")
+    }
+}
+
+fn dangerous_mcp_tools_enabled() -> bool {
+    std::env::var(ENABLE_DANGEROUS_MCP_TOOLS_ENV)
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn validate_navigate_url(url: &str) -> Result<(), McpError> {
+    // Mirror the normalization a browser's URL parser applies before it
+    // resolves the scheme, so a crafted string can't smuggle a `javascript:`
+    // URL past this filter and reach `window.location.href` in the bridge:
+    //   * ASCII tab/LF/CR are stripped from anywhere in the input, so
+    //     `java\tscript:` and `java\nscript:` collapse to `javascript:`.
+    //   * Leading C0 controls and spaces (scalar value <= U+0020) are removed,
+    //     so `\u{0}javascript:` collapses to `javascript:`.
+    let stripped: String = url
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    if stripped
+        .trim_start_matches(|c| c <= '\u{20}')
+        .to_ascii_lowercase()
+        .starts_with("javascript:")
+    {
+        return Err(invalid_params(
+            "navigate does not allow javascript: URLs for security reasons",
+        ));
+    }
+    Ok(())
 }
 
 struct ToolSpec {
@@ -809,6 +880,14 @@ fn tool_specs() -> Vec<ToolSpec> {
             description: "Capture the WebView or an element selector as a PNG data URL.",
             schema: selector_schema,
             read_only: true,
+            destructive: false,
+            idempotent: false,
+        },
+        ToolSpec {
+            name: "screenshot_native",
+            description: "Capture a native window by `window_id` and write a PNG to `output_path`. Returns path + metadata; never inlines bytes.",
+            schema: pilot_screenshot_schema,
+            read_only: false,
             destructive: false,
             idempotent: false,
         },
@@ -1017,12 +1096,24 @@ fn cached_tools() -> &'static Vec<Tool> {
 }
 
 fn build_tools() -> Vec<Tool> {
+    build_tools_with_flag(dangerous_mcp_tools_enabled())
+}
+
+fn build_tools_with_flag(enable_dangerous_tools: bool) -> Vec<Tool> {
     let mut specs = tool_specs();
+    if !enable_dangerous_tools {
+        specs.retain(|spec| !DANGEROUS_MCP_TOOLS.contains(&spec.name));
+    }
     specs.sort_by_key(|spec| spec.name);
     specs
         .into_iter()
         .map(|spec| {
-            Tool::new(spec.name, spec.description, (spec.schema)()).with_annotations(
+            Tool::new(
+                namespaced_tool_name(spec.name),
+                spec.description,
+                (spec.schema)(),
+            )
+            .with_annotations(
                 ToolAnnotations::new()
                     .read_only(spec.read_only)
                     .destructive(spec.destructive)
@@ -1070,6 +1161,11 @@ fn required_u64(args: &JsonObject, name: &str) -> Result<u64, McpError> {
     args.get(name)
         .and_then(Value::as_u64)
         .ok_or_else(|| invalid_params(format!("'{name}' is required and must be an integer")))
+}
+
+fn required_u32(args: &JsonObject, name: &str) -> Result<u32, McpError> {
+    let value = required_u64(args, name)?;
+    u32::try_from(value).map_err(|_| invalid_params(format!("'{name}' is out of range for u32")))
 }
 
 fn optional_u64(args: &JsonObject, name: &str) -> Result<Option<u64>, McpError> {
@@ -1365,6 +1461,33 @@ fn ipc_schema() -> Arc<JsonObject> {
     )
 }
 
+fn pilot_screenshot_schema() -> Arc<JsonObject> {
+    object_schema(
+        props([
+            (
+                "window_id",
+                json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
+                    "description": "Native window id (e.g. `CGWindowID` on macOS) to capture. Must fit in u32.",
+                }),
+            ),
+            (
+                "output_path",
+                string_prop(
+                    "Absolute path where the PNG is written. The parent directory must already exist; the file is written atomically via a temp + rename.",
+                ),
+            ),
+            (
+                "format",
+                enum_prop("Image format. v1 accepts only \"png\".", &["png"]),
+            ),
+        ]),
+        &["window_id", "output_path"],
+    )
+}
+
 fn selector_schema() -> Arc<JsonObject> {
     object_schema(
         props([("selector", string_prop("Optional CSS selector."))]),
@@ -1573,8 +1696,18 @@ mod tests {
 
     #[test]
     fn tool_list_matches_cli_command_surface() {
-        let tools = tools();
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        // Validate the complete tool surface; runtime gating of dangerous tools
+        // is covered by `dangerous_tools_hidden_by_default` / `dangerous_tools_can_be_enabled`.
+        let tools = build_tools_with_flag(true);
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool.name.as_ref().starts_with(PILOT_PREFIX))
+        );
+        let names: Vec<&str> = tools
+            .iter()
+            .map(|tool| normalize_tool_name(tool.name.as_ref()))
+            .collect();
         let expected = vec![
             "assert_checked",
             "assert_contains",
@@ -1605,6 +1738,7 @@ mod tests {
             "record_stop",
             "replay",
             "screenshot",
+            "screenshot_native",
             "scroll",
             "select",
             "snapshot",
@@ -1623,6 +1757,40 @@ mod tests {
             "windows",
         ];
         assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn tool_name_helpers_are_round_trip_symmetric() {
+        assert_eq!(normalize_tool_name("click"), "click");
+        assert_eq!(normalize_tool_name("pilot.click"), "click");
+        assert_eq!(namespaced_tool_name("click"), "pilot.click");
+        assert_eq!(namespaced_tool_name("pilot.click"), "pilot.click");
+    }
+
+    #[test]
+    fn tool_name_helpers_handle_corner_cases() {
+        // normalize_tool_name: empty, bare prefix, double prefix
+        assert_eq!(normalize_tool_name(""), "");
+        assert_eq!(normalize_tool_name(PILOT_PREFIX), "");
+        // Single-strip is intentional: a double prefix loses only the outer one.
+        assert_eq!(normalize_tool_name("pilot.pilot.click"), "pilot.click");
+
+        // namespaced_tool_name: empty, bare prefix, already-namespaced
+        assert_eq!(namespaced_tool_name(""), PILOT_PREFIX);
+        assert_eq!(namespaced_tool_name(PILOT_PREFIX), PILOT_PREFIX);
+        assert_eq!(namespaced_tool_name("pilot.click"), "pilot.click");
+    }
+
+    #[test]
+    fn get_tool_resolves_bare_and_prefixed_names_to_same_tool() {
+        let pilot = PilotMcpServer::new(None, None);
+        let bare = pilot.get_tool("click").expect("bare name resolves");
+        let prefixed = pilot
+            .get_tool("pilot.click")
+            .expect("prefixed name resolves");
+        assert_eq!(bare.name, prefixed.name);
+        assert_eq!(bare.description, prefixed.description);
+        assert_eq!(bare.name.as_ref(), "pilot.click");
     }
 
     #[test]
@@ -1666,6 +1834,123 @@ mod tests {
     }
 
     #[test]
+    fn pilot_screenshot_tool_advertises_path_only_contract() {
+        let tool = cached_tools()
+            .iter()
+            .find(|t| t.name == "pilot.screenshot_native")
+            .expect("pilot.screenshot_native tool registered");
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("schema has properties");
+        for required in ["window_id", "output_path", "format"] {
+            assert!(
+                props.contains_key(required),
+                "pilot.screenshot_native must advertise `{required}` in its schema"
+            );
+        }
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("required list present");
+        let required: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        assert!(
+            required.contains(&"window_id"),
+            "pilot.screenshot_native must require `window_id`"
+        );
+        assert!(
+            required.contains(&"output_path"),
+            "pilot.screenshot_native must require `output_path`"
+        );
+        // The path-only contract forbids inline byte / base64 fields on either
+        // surface — guard against a future revision silently growing one.
+        for forbidden in ["bytes", "base64", "data"] {
+            assert!(
+                !props.contains_key(forbidden),
+                "pilot.screenshot_native must not advertise `{forbidden}` (path-only contract)"
+            );
+        }
+    }
+
+    #[test]
+    fn pilot_screenshot_tool_routes_native_method() {
+        // The native contract lives under a distinct name (`screenshot_native`
+        // advertised as `pilot.screenshot_native`) so the existing bridge
+        // `screenshot` (html-to-image, base64) keeps working for current
+        // CLI/scenario callers. This test pins the surface so a future
+        // refactor cannot silently fold the two tools together and resurrect
+        // the bytes-inline payload shape.
+        let bridge = cached_tools()
+            .iter()
+            .find(|t| t.name == "pilot.screenshot")
+            .expect("bridge pilot.screenshot tool still registered");
+        let native = cached_tools()
+            .iter()
+            .find(|t| t.name == "pilot.screenshot_native")
+            .expect("pilot.screenshot_native tool registered");
+        assert_ne!(
+            bridge.input_schema, native.input_schema,
+            "bridge `pilot.screenshot` and native `pilot.screenshot_native` advertise different schemas"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn pilot_screenshot_forwards_native_params_to_jsonrpc() {
+        let socket = std::env::temp_dir().join(format!(
+            "tauri-pilot-mcp-screenshot-native-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).expect("bind mock socket");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read request");
+            let request: Request = serde_json::from_str(line.trim()).expect("parse request");
+            assert_eq!(request.method, "screenshot_native");
+            let params = request.params.expect("native screenshot params present");
+            assert_eq!(params["window_id"], json!(42_u64));
+            assert_eq!(params["output_path"], json!("/tmp/out.png"));
+            assert_eq!(params["format"], json!("png"));
+            let response = Response::success(
+                request.id,
+                json!({
+                    "output_path": "/tmp/out.png",
+                    "window_id": 42_u32,
+                    "width": 100_u32,
+                    "height": 50_u32,
+                    "scale_factor": 2.0_f32,
+                    "byte_size": 1234_u64,
+                    "backend": "screencapture",
+                    "tcc_denied": false,
+                }),
+            );
+            let mut bytes = serde_json::to_vec(&response).expect("serialize response");
+            bytes.push(b'\n');
+            writer.write_all(&bytes).await.expect("write response");
+        });
+
+        let pilot = PilotMcpServer::new(Some(socket.clone()), None);
+        let mut args = Map::new();
+        args.insert("window_id".to_owned(), json!(42_u32));
+        args.insert("output_path".to_owned(), json!("/tmp/out.png"));
+        args.insert("format".to_owned(), json!("png"));
+        let result = pilot
+            .call_tool_by_name("screenshot_native", args)
+            .await
+            .expect("tool call succeeds");
+        assert_eq!(result.is_error, Some(false));
+
+        server.await.expect("mock server task");
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
     fn windows_schema_omits_window_override() {
         let schema = global_empty_schema();
         let properties = schema
@@ -1684,6 +1969,81 @@ mod tests {
         assert!(banner.contains("auto-detect on first tool call"));
         assert!(banner.contains("main"));
         assert!(banner.contains("stdout is reserved for MCP JSON-RPC"));
+    }
+
+    #[test]
+    fn dangerous_tools_hidden_by_default() {
+        let tools = build_tools_with_flag(false);
+        for dangerous in DANGEROUS_MCP_TOOLS {
+            let namespaced = namespaced_tool_name(dangerous);
+            assert!(
+                !tools.iter().any(|tool| tool.name == namespaced),
+                "dangerous tool '{dangerous}' must not be listed unless explicitly enabled"
+            );
+        }
+    }
+
+    #[test]
+    fn dangerous_tools_can_be_enabled() {
+        let tools = build_tools_with_flag(true);
+        for dangerous in DANGEROUS_MCP_TOOLS {
+            let namespaced = namespaced_tool_name(dangerous);
+            assert!(
+                tools.iter().any(|tool| tool.name == namespaced),
+                "dangerous tool '{dangerous}' should be listed when explicitly enabled"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn navigate_rejects_javascript_urls() {
+        // Each payload normalizes to `javascript:` once a browser's URL parser
+        // strips tab/LF/CR and leading C0 controls/spaces, so the MCP filter
+        // must reject them before they reach `window.location.href`.
+        let payloads = [
+            " javascript:alert(1)",          // leading space
+            "JaVaScRiPt:alert(1)",           // mixed case
+            "java\tscript:alert(1)",         // embedded tab
+            "java\nscript:alert(1)",         // embedded newline
+            "java\rscript:alert(1)",         // embedded carriage return
+            "\u{0}javascript:alert(1)",      // leading NUL (C0 control)
+            "\u{1}\u{2}javascript:alert(1)", // leading C0 controls
+        ];
+
+        for payload in payloads {
+            let pilot = PilotMcpServer::new(None, None);
+            let mut args = Map::new();
+            args.insert("url".to_owned(), json!(payload));
+
+            // Validation rejects before any socket call, so this surfaces an
+            // `Err(McpError)` rather than reaching the app tool.
+            let err = pilot
+                .call_tool_by_name("navigate", args)
+                .await
+                .expect_err(&format!("javascript URL should be rejected: {payload:?}"));
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "payload: {payload:?}");
+            assert!(
+                err.message.contains("does not allow javascript: URLs"),
+                "unexpected error message for {payload:?}: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn validate_navigate_url_allows_safe_urls() {
+        // Legitimate schemes and paths that merely contain the substring must
+        // not be over-blocked by the prefix check.
+        for url in [
+            "https://example.com/app",
+            "/relative/path",
+            "https://example.com/javascript:not-a-scheme",
+            "about:blank",
+        ] {
+            validate_navigate_url(url).unwrap_or_else(|err| {
+                panic!("safe url wrongly rejected: {url:?} ({})", err.message)
+            });
+        }
     }
 
     #[tokio::test]
@@ -1720,7 +2080,7 @@ mod tests {
             .and_then(Value::as_str)
             .expect("script result");
         assert!(script.starts_with("#!/bin/bash"));
-        assert!(script.contains("tauri-pilot click @e1"));
+        assert!(script.contains("tauri-pilot click '@e1'"));
 
         let _ = std::fs::remove_file(&recording);
     }

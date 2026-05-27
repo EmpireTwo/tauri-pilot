@@ -9,6 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Block `javascript:` URLs in the `pilot.navigate` MCP tool. Because
+  `navigate` is not gated behind the dangerous-tools opt-in, an untrusted MCP
+  client could previously pass a `javascript:` URL that the bridge assigns to
+  `window.location.href`, executing arbitrary JavaScript and bypassing the
+  `pilot.eval` gate added in [#104]. The URL is now normalized the way a
+  browser's URL parser would — stripping ASCII tab/newline/carriage-return
+  anywhere in the string and leading C0 controls/spaces — before any
+  `javascript:` scheme is rejected with `INVALID_PARAMS`, so smuggling
+  variants such as `java\tscript:` or `\0javascript:` are blocked too. [#107]
+- Harden the release workflow against `CARGO_REGISTRY_TOKEN` exfiltration.
+  `cargo publish` ran a verification build with the registry token present in
+  the environment, so a compromised dependency build script or proc-macro
+  could read and leak the token during that build. Each crate is now verified
+  with a secret-free `cargo package` step (no token in scope), and the
+  token-bearing `cargo publish` step runs with `--no-verify` so it only uploads
+  the already-verified package. [#106]
+- Shell-escape element `ref` values when exporting recordings to shell
+  scripts via `replay --export sh`. Refs were previously emitted unquoted
+  (e.g. `tauri-pilot click @e1`) while selectors and values were already
+  escaped, so a recording carrying a crafted `ref` (injectable through the
+  `record.add` IPC method or a hand-edited recording file) could inject
+  arbitrary shell commands into the generated script. All `@ref` tokens —
+  top-level targets, nested `source`/`target` refs, and `scroll --ref`
+  arguments — are now single-quoted. [#105]
+- Gate the dangerous MCP tools `pilot.drop`, `pilot.eval`, and `pilot.ipc`
+  behind the `TAURI_PILOT_MCP_ENABLE_DANGEROUS_TOOLS` opt-in environment
+  variable. By default these tools are now hidden from `list_tools` and
+  rejected at call time, so an untrusted MCP client can no longer execute
+  arbitrary JavaScript (`eval`), invoke arbitrary Tauri commands (`ipc`), or
+  feed arbitrary local file paths into the app (`drop`). Set the variable to
+  `1`, `true`, `yes`, or `on` to restore the previous behaviour. [#104]
+
+## [0.6.0] - 2026-05-22
+
+### Added
+
+- macOS native screenshot backend (`screencapture` shell-out plus
+  `CGWindowListCreateImage` fallback) behind the existing `screenshot`
+  module surface; WKWebView path scaffolded for follow-up.
+- `screenshot_native` JSON-RPC method (advertised as the `pilot.screenshot_native`
+  MCP tool) that captures a window by `window_id` to a caller-specified
+  `output_path`. Uses macOS `screencapture` when Screen Recording permission
+  is granted, falls back to `CGWindowListCreateImage` with `tcc_denied: true`
+  in metadata when permission is revoked between probe and call. Path-only
+  response shape — no inline bytes. Bare `screenshot` keeps its existing
+  bridge html-to-image behaviour and is wholly separate from the new method,
+  so the two surfaces cannot be confused. On Linux and Windows,
+  `pilot.screenshot_native` is registered but every call responds with
+  `PERMISSION_DENIED` and the message `"screenshot is only available on
+  macOS in this release"` — the request shape validators run first, so a
+  contract-violating call sees the validation error on every host.
+
+### Security
+
+- Add top-level `permissions: contents: read` to CI and Release workflows
+  to satisfy the CodeQL `actions/missing-workflow-permissions` rule (least
+  privilege for `GITHUB_TOKEN`). The Release job keeps its scoped
+  `contents: write` override needed to publish GitHub Releases.
+- Force `devalue` to `^5.8.1` via `docs/package.json` `overrides` to clear
+  the GHSA DoS advisory (sparse-array deserialization) flagged on the
+  vulnerable `>=5.6.3, <=5.8.0` range pulled transitively through
+  `astro`/`@astrojs/starlight`.
 - `SKILL.md`: second pass on skills.sh Snyk findings W007 and W011 — the
   first remediation in [#89] cleared the literal `password123` value but
   left enough authentication-flavoured vocabulary and a login example in
@@ -24,9 +86,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (advertised surface):** MCP tool names are now namespaced under
+  `pilot.*` in the published tool list — every tool exposed by `tauri-pilot
+  mcp` is advertised as `pilot.<name>` (e.g. `pilot.ping`, `pilot.click`,
+  `pilot.fill`, `pilot.attrs`, `pilot.snapshot`, `pilot.eval`,
+  `pilot.assert_text`, etc.). Bare names continue to resolve through
+  `tools/call` for backwards compatibility, but the advertised surface that
+  MCP clients discover and register against is the prefixed form. Motivation:
+  when this CLI is registered alongside other MCP servers, generic bare names
+  like `attrs` or `ping` collide with — and shadow — tools from those servers,
+  forcing the client owner to disambiguate by hand. Clients that referred to
+  bare names in their server registrations or inline prompts should update to
+  the prefixed form (`attrs` → `pilot.attrs`, `ping` → `pilot.ping`, and so
+  on). No tool semantics, schemas, or MCP protocol versions change.
+- Pin the `rmcp` manifest floor at `1.7.0` (was `^1.4.0`). The lockfile already
+  resolved to `1.7.0` via the earlier caret bump in `[0.5.2]`, so this only
+  aligns the declared dependency with the version actually being tested and
+  prevents an accidental rebuild against a pre-`1.7.0` rmcp. No behaviour
+  change.
 - Replace ASCII architecture diagram in `README.md` with an `assets/architecture.png`
   illustration (with descriptive `alt` text) for better rendering on crates.io,
   GitHub, and assistive technologies.
+- Bump Rust dependencies: `tauri` `2.11.1` → `2.11.2`, `tauri-plugin`
+  (build) `2.6.1` → `2.6.2` (patch), `quick-xml` `0.36` → `0.40` (used only
+  by scenario serialization tests), `toml` `0.8` → `1` (used by scenario
+  loader — `from_str` API unchanged for our usage). Workspace-wide
+  `cargo update` also refreshed transitive crates. `windows` (`0.61`) and
+  `core-graphics` (`0.24`) intentionally kept pinned until their next
+  minor bumps can be validated on actual Windows / macOS runners.
 
 ## [0.5.2] - 2026-05-14
 
@@ -308,7 +395,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#54]: https://github.com/mpiton/tauri-pilot/issues/54
 [#62]: https://github.com/mpiton/tauri-pilot/pull/62
 [#63]: https://github.com/mpiton/tauri-pilot/pull/63
-[Unreleased]: https://github.com/mpiton/tauri-pilot/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/mpiton/tauri-pilot/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mpiton/tauri-pilot/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/mpiton/tauri-pilot/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/mpiton/tauri-pilot/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/mpiton/tauri-pilot/compare/v0.4.0...v0.5.0
@@ -337,3 +425,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#85]: https://github.com/mpiton/tauri-pilot/issues/85
 [#89]: https://github.com/mpiton/tauri-pilot/pull/89
 [#91]: https://github.com/mpiton/tauri-pilot/issues/91
+[#104]: https://github.com/mpiton/tauri-pilot/pull/104
+[#105]: https://github.com/mpiton/tauri-pilot/pull/105
+[#106]: https://github.com/mpiton/tauri-pilot/pull/106
+[#107]: https://github.com/mpiton/tauri-pilot/pull/107

@@ -4,6 +4,7 @@ use crate::eval::EvalEngine;
 use crate::key;
 use crate::protocol::RpcError;
 use crate::recorder::{RecordEntry, Recorder};
+use crate::screenshot;
 use crate::server::{EvalFn, FocusFn, ListWindowsFn};
 
 use std::time::Duration;
@@ -152,9 +153,15 @@ pub(crate) async fn dispatch(
             )
             .await
         }
+        // The bare `screenshot` JSON-RPC method is the bridge-side
+        // html-to-image path (returns a base64 PNG data URL); native window
+        // capture ships under the distinct `screenshot_native` method so the
+        // two surfaces can't be confused by callers or accidentally folded
+        // together by a future refactor.
         "screenshot" => {
             handle_eval_method(method, params, engine, eval_fn, win, SCREENSHOT_TIMEOUT).await
         }
+        "screenshot_native" => screenshot::handle_screenshot(params).await,
         "console.getLogs" => {
             handle_eval_method("consoleLogs", params, engine, eval_fn, win, DEFAULT_TIMEOUT).await
         }
@@ -283,6 +290,7 @@ async fn handle_diff(
             message: msg,
             data: None,
         })?;
+    let script = ensure_bridge_script(&script);
     let (id, rx) = engine.register();
     let wrapped = EvalEngine::wrap_script(id, &script);
 
@@ -463,6 +471,7 @@ async fn handle_eval_method(
         message: msg,
         data: None,
     })?;
+    let script = ensure_bridge_script(&script);
     let (id, rx) = engine.register();
     let wrapped = EvalEngine::wrap_script(id, &script);
 
@@ -511,6 +520,19 @@ fn build_bridge_call(method: &str, params: Option<&serde_json::Value>) -> Result
     Ok(format!("window.__PILOT__.{method}({args})"))
 }
 
+#[cfg(debug_assertions)]
+fn ensure_bridge_script(call: &str) -> String {
+    format!(
+        "(()=>{{if(!window.__PILOT__){{\n{}\n}}return ({call});}})()",
+        crate::BRIDGE_JS
+    )
+}
+
+#[cfg(not(debug_assertions))]
+fn ensure_bridge_script(call: &str) -> String {
+    call.to_owned()
+}
+
 /// Process the IPC callback from the JS bridge (ADR-001).
 pub(crate) fn handle_callback(
     engine: &EvalEngine,
@@ -531,7 +553,22 @@ pub(crate) fn handle_callback(
     }
 }
 
-/// Tauri IPC command for the `__callback` handler.
+/// Tauri IPC command for the eval callback handler.
+#[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri::command contract — macro wrapper is the real consumer"
+)]
+pub(crate) fn callback(
+    eval_engine: tauri::State<'_, EvalEngine>,
+    id: u64,
+    result: Option<String>,
+    error: Option<String>,
+) {
+    handle_callback(&eval_engine, id, result, error);
+}
+
+/// Legacy Tauri IPC command for the `__callback` handler.
 ///
 /// `#[tauri::command]` binds `State<'_, T>` by value — the generated wrapper
 /// is the true consumer, so clippy's view of the body is incomplete. Cannot
@@ -1132,6 +1169,79 @@ mod tests {
         // "window" param must not appear in the JS call args
         assert!(!script.contains("\"window\""));
         assert!(script.contains("\"ref\""));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_screenshot_native_rejects_missing_window_id() {
+        // The native method must validate `window_id` before any platform
+        // path is touched, so this works the same on every host.
+        let engine = EvalEngine::new();
+        let params = json!({"output_path": "/tmp/x.png"});
+        let err = dispatch(
+            "screenshot_native",
+            Some(&params),
+            &engine,
+            None,
+            None,
+            None,
+            &Recorder::new(),
+        )
+        .await
+        .expect_err("missing window_id must surface as Err");
+        assert_eq!(err.code, -32602);
+        assert!(
+            err.message.contains("window_id"),
+            "error message must reference window_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_screenshot_native_rejects_relative_output_path() {
+        // The native method must reject a non-absolute `output_path` before
+        // any platform capture work — this works the same on every host.
+        let engine = EvalEngine::new();
+        let params = json!({"window_id": 1_u32, "output_path": "relative/path.png"});
+        let err = dispatch(
+            "screenshot_native",
+            Some(&params),
+            &engine,
+            None,
+            None,
+            None,
+            &Recorder::new(),
+        )
+        .await
+        .expect_err("relative path must error before any capture");
+        assert_eq!(err.code, -32602);
+        let data = err.data.as_ref().expect("error data present");
+        assert_eq!(
+            data.get("error").and_then(|v| v.as_str()),
+            Some("INVALID_OUTPUT_PATH")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_screenshot_routes_to_bridge_regardless_of_params() {
+        // The bare `screenshot` JSON-RPC method always goes to the bridge
+        // (html-to-image, base64) — even if a caller mistakenly includes an
+        // `output_path` field, that is no longer a signal to dispatch to the
+        // native handler. The two surfaces are wholly separate methods.
+        let engine = EvalEngine::new();
+        for params in [json!({}), json!({"output_path": "/tmp/x.png"})] {
+            let result = dispatch(
+                "screenshot",
+                Some(&params),
+                &engine,
+                None,
+                None,
+                None,
+                &Recorder::new(),
+            )
+            .await;
+            let err = result.expect_err("dispatch returns Err");
+            assert_eq!(err.code, -32603);
+            assert!(err.message.contains("No webview"));
+        }
     }
 
     #[tokio::test]
