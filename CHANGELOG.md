@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-27
+
 ### Security
 
 - Block `javascript:` URLs in the `pilot.navigate` MCP tool. Because
@@ -395,7 +397,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#54]: https://github.com/mpiton/tauri-pilot/issues/54
 [#62]: https://github.com/mpiton/tauri-pilot/pull/62
 [#63]: https://github.com/mpiton/tauri-pilot/pull/63
-[Unreleased]: https://github.com/mpiton/tauri-pilot/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mpiton/tauri-pilot/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/mpiton/tauri-pilot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mpiton/tauri-pilot/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/mpiton/tauri-pilot/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/mpiton/tauri-pilot/compare/v0.5.0...v0.5.1
